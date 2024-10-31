@@ -31,7 +31,7 @@ function trim () {
 }
 
 function log (args, options) {
-  return fwd(spawn('git', ['log'].concat(args), options), function (code, stderr) {
+  return fwd(spawn('git', ['--no-pager', 'log'].concat(args), options), function (code, stderr) {
     return new Error('git log failed:\n\n' + stderr);
   })
   .stdout;
@@ -42,7 +42,7 @@ function args (config, fieldMap) {
   return toArgv(config);
 }
 
-exports.parse = function parseLogStream (config, options) {
+exports.parse = function parseLogStream (config, options, onChunk) {
   config  = config || {};
   var map = fields.map();
   return combine.obj([
@@ -51,11 +51,13 @@ exports.parse = function parseLogStream (config, options) {
     trim(),
     through.obj(function (chunk, enc, callback) {
       var fields = chunk.toString('utf8').split(FIELD);
-      callback(null, map.reduce(function (parsed, field, index) {
+      var commit = map.reduce(function (parsed, field, index) {
         var value = fields[index];
         traverse(parsed).set(field.path, field.type ? new field.type(value) : value);
         return parsed;
-      }, {}));
+      }, {});
+      onChunk && onChunk(commit);
+      callback(null, commit);
     })
   ]);
 };
