@@ -1,40 +1,16 @@
 'use strict';
 
-var spawn    = require('child_process').spawn;
-var through  = require('through2');
-var split    = require('split2');
+const util = require('node:util');
+const exec = util.promisify(require('node:child_process').exec);
 var traverse = require('traverse');
 var fields   = require('./fields');
 var toArgv   = require('argv-formatter').format;
-var combine  = require('stream-combiner2');
-var fwd      = require('spawn-error-forwarder');
 
 var END = '==END==';
 var FIELD = '==FIELD==';
 
 function format (fieldMap) {
-  return fieldMap.map(function (field) {
-      return '%' + field.key;
-    })
-    .join(FIELD) + END;
-}
-
-function trim () {
-  return through(function (chunk, enc, callback) {
-    if (!chunk) {
-      callback();
-    }
-    else {
-      callback(null, chunk);
-    }
-  });
-}
-
-function log (args, options) {
-  return fwd(spawn('git', ['--no-pager', 'log'].concat(args), options), function (code, stderr) {
-    return new Error('git log failed:\n\n' + stderr);
-  })
-  .stdout;
+  return fieldMap.map((field) => `%${field.key}`).join(FIELD) + END;
 }
 
 function args (config, fieldMap) {
@@ -42,24 +18,29 @@ function args (config, fieldMap) {
   return toArgv(config);
 }
 
-exports.parse = function parseLogStream (config, options, onChunk) {
+async function extractLogs(args) {
+  const { stdout, stderr } = await exec(`git --no-pager log ${args.join(' ')}`);
+  if (stderr) {
+    console.error(stderr);
+    return null;
+  }
+  return stdout;
+}
+
+exports.parse = async function parse (config, onCommit) {
   config  = config || {};
-  var map = fields.map();
-  return combine.obj([
-    log(args(config, map), options),
-    split(END + '\n'),
-    trim(),
-    through.obj(function (chunk, enc, callback) {
-      var fields = chunk.toString('utf8').split(FIELD);
-      var commit = map.reduce(function (parsed, field, index) {
-        var value = fields[index];
-        traverse(parsed).set(field.path, field.type ? new field.type(value) : value);
-        return parsed;
-      }, {});
-      onChunk && onChunk(commit);
-      callback(null, commit);
-    })
-  ]);
+  const map = fields.map();
+  const results = await extractLogs(args(config, map));
+  results && results.toString().split(END).map((chunk) => {
+    const fields = chunk.toString('utf8').trim().split(FIELD);
+    const commit = map.reduce((parsed, field, index) => {
+      var value = fields[index];
+      traverse(parsed).set(field.path, field.type ? new field.type(value) : value);
+      return parsed;
+    }, {});
+    commit.subject && onCommit && onCommit(commit);
+  });
+  return results;
 };
 
 exports.fields = fields.config;
